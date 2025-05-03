@@ -34,14 +34,31 @@ async function loadChalk() {
   async function loadWallets() {
     try {
       const data = await fs.readFile(WALLET_FILE, "utf8");
-      return JSON.parse(data);
+      const wallets = JSON.parse(data);
+      if (!wallets.length) {
+        throw new Error("No wallets found in wallets.json");
+      }
+      return wallets;
     } catch (error) {
-      return [{ id: "default", address: process.env.WALLET_ADDRESS, privateKey: process.env.PRIVATE_KEY }];
+      console.log(chalk.yellow("No wallets.json found, creating default wallet..."));
+      const defaultWallet = [
+        {
+          id: "default",
+          address: process.env.WALLET_ADDRESS || "0x0",
+          privateKey: process.env.PRIVATE_KEY || "",
+        },
+      ];
+      await saveWallets(defaultWallet);
+      return defaultWallet;
     }
   }
 
   async function saveWallets(wallets) {
-    await fs.writeFile(WALLET_FILE, JSON.stringify(wallets, null, 2));
+    try {
+      await fs.writeFile(WALLET_FILE, JSON.stringify(wallets, null, 2));
+    } catch (error) {
+      console.error(chalk.red(`Failed to save wallets: ${error.message}`));
+    }
   }
 
   async function manageWallets() {
@@ -109,21 +126,40 @@ async function loadChalk() {
     console.log(chalk.yellow(`\n📜 Running: ${script.name} with wallet ${wallet.id}...`));
 
     return new Promise((resolve, reject) => {
-      const env = { ...process.env, WALLET_ADDRESS: wallet.address, PRIVATE_KEY: wallet.privateKey };
-      const process = spawn("node", script.path.endsWith(".mjs") ? ["--experimental-modules", script.path] : [script.path], { env });
+      try {
+        const envVars = {
+          WALLET_ADDRESS: wallet.address,
+          PRIVATE_KEY: wallet.privateKey,
+          ...process.env // Copy all existing environment variables
+        };
 
-      process.stdout.on("data", (data) => console.log(chalk.white(data.toString())));
-      process.stderr.on("data", (data) => console.error(chalk.red(`Error: ${data.toString()}`)));
+        const args = script.path.endsWith(".mjs")
+          ? ["--experimental-modules", script.path]
+          : [script.path];
 
-      process.on("close", (code) => {
-        if (code === 0) {
-          console.log(chalk.green(`✅ Success: ${script.name}`));
-          resolve();
-        } else {
-          console.error(chalk.red(`❌ Failed: ${script.name} (Exit code: ${code})`));
-          reject(new Error(`Module ${script.name} failed`));
-        }
-      });
+        const childProcess = spawn("node", args, { env: envVars });
+
+        childProcess.stdout.on("data", (data) => console.log(chalk.white(data.toString())));
+        childProcess.stderr.on("data", (data) => console.error(chalk.red(`Error: ${data.toString()}`)));
+
+        childProcess.on("close", (code) => {
+          if (code === 0) {
+            console.log(chalk.green(`✅ Success: ${script.name}`));
+            resolve();
+          } else {
+            console.error(chalk.red(`❌ Failed: ${script.name} (Exit code: ${code})`));
+            reject(new Error(`Module ${script.name} failed with exit code ${code}`));
+          }
+        });
+
+        childProcess.on("error", (error) => {
+          console.error(chalk.red(`❌ Process error in ${script.name}: ${error.message}`));
+          reject(error);
+        });
+      } catch (error) {
+        console.error(chalk.red(`❌ Failed to start ${script.name}: ${error.message}`));
+        reject(error);
+      }
     });
   }
 
@@ -134,46 +170,52 @@ async function loadChalk() {
         try {
           await runScript(script, wallet);
         } catch (error) {
-          console.error(chalk.red(`⚠️ Skipping ${script.name} due to error`));
+          console.error(chalk.red(`⚠️ Skipping ${script.name} due to error: ${error.message}`));
+          console.error(chalk.red(`Stack trace: ${error.stack}`));
         }
       }
     }
   }
 
   async function main() {
-    const wallet = await manageWallets();
+    try {
+      const wallet = await manageWallets();
 
-    const { selectedModules } = await prompts({
-      type: "multiselect",
-      name: "selectedModules",
-      message: "Select modules to run (use space to select):",
-      instructions: `
-      Instructions:
-      - Use up/down arrows (↑/↓) to navigate
-      - Press space (␣) to select or deselect
-      - Press "a" to select all
-      - Press Enter to continue`,
-      choices: scripts.map((script) => ({
-        title: script.name,
-        value: script,
-        selected: true,
-      })),
-      min: 1,
-    });
+      const { selectedModules } = await prompts({
+        type: "multiselect",
+        name: "selectedModules",
+        message: "Select modules to run (use space to select):",
+        instructions: `
+        Instructions:
+        - Use up/down arrows (↑/↓) to navigate
+        - Press space (␣) to select or deselect
+        - Press "a" to select all
+        - Press Enter to continue`,
+        choices: scripts.map((script) => ({
+          title: script.name,
+          value: script,
+          selected: true,
+        })),
+        min: 1,
+      });
 
-    const { loopCount } = await prompts({
-      type: "number",
-      name: "loopCount",
-      message: "How many times to run the modules?",
-      validate: (value) => (value > 0 ? true : "Enter a number greater than 0"),
-      initial: 1,
-    });
+      const { loopCount } = await prompts({
+        type: "number",
+        name: "loopCount",
+        message: "How many times to run the modules?",
+        validate: (value) => (value > 0 ? true : "Enter a number greater than 0"),
+        initial: 1,
+      });
 
-    console.log(chalk.green(`\n🚀 Starting execution of ${selectedModules.length} modules for ${loopCount} loops with wallet ${wallet.id}\n`));
+      console.log(chalk.green(`\n🚀 Starting execution of ${selectedModules.length} modules for ${loopCount} loops with wallet ${wallet.id}\n`));
 
-    await runScriptsSequentially(loopCount, selectedModules, wallet);
+      await runScriptsSequentially(loopCount, selectedModules, wallet);
 
-    console.log(chalk.green.bold("\n✅✅ All modules completed! ✅✅\n"));
+      console.log(chalk.green.bold("\n✅✅ All modules completed! ✅✅\n"));
+    } catch (error) {
+      console.error(chalk.red(`❌ Main execution failed: ${error.message}`));
+      console.error(chalk.red(`Stack trace: ${error.stack}`));
+    }
   }
 
   main();
