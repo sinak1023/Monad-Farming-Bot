@@ -4,10 +4,31 @@ import solc from "solc";
 import chalk from "chalk";
 import ora from "ora";
 import readline from "readline";
+import fs from "fs/promises";
+import { fileURLToPath } from "url";
+import path from "path";
 
 config();
 
-const RPC_URL = "https://testnet-rpc.monad.xyz";
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const LOG_FILE = path.join(__dirname, "../deploy.log");
+
+async function logToFile(message) {
+    const timestamp = new Date().toISOString();
+    const logMessage = `[${timestamp}] ${message}\n`;
+    try {
+        await fs.appendFile(LOG_FILE, logMessage);
+    } catch (error) {
+        console.error(chalk.red(`Failed to write to log file: ${error.message}`));
+    }
+}
+
+const RPC_URLS = [
+    "https://testnet-rpc.monorail.xyz",
+    "https://testnet-rpc.monad.xyz",
+    "https://monad-testnet.drpc.org"
+];
 
 const chemicalTerms = [
     "Atom", "Molecule", "Electron", "Proton", "Neutron", "Ion", "Isotope", "Reaction", "Catalyst", "Solution",
@@ -37,6 +58,51 @@ const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
 });
+
+async function connectToRpc() {
+    for (const url of RPC_URLS) {
+        try {
+            const provider = new ethers.providers.JsonRpcProvider(url);
+            await provider.getNetwork();
+            const message = `Connected to RPC: ${url}`;
+            console.log(chalk.blue(message));
+            await logToFile(message);
+            return provider;
+        } catch (error) {
+            const message = `Failed to connect to ${url}: ${error.message}`;
+            console.log(chalk.yellow(message));
+            await logToFile(message);
+        }
+    }
+    const errorMessage = "Unable to connect to any RPC";
+    console.error(chalk.red(errorMessage));
+    await logToFile(errorMessage);
+    throw new Error(errorMessage);
+}
+
+async function loadWallet() {
+    const WALLET_FILE = path.join(__dirname, "../wallets.json");
+    try {
+        const data = await fs.readFile(WALLET_FILE, "utf8");
+        const wallets = JSON.parse(data);
+        if (!wallets.length) {
+            throw new Error("No wallets found in wallets.json");
+        }
+        const selectedWallet = wallets.find(w => w.id === process.env.WALLET_ID) || wallets[0];
+        if (!selectedWallet.privateKey) {
+            throw new Error("No private key found for selected wallet");
+        }
+        const message = `Loaded wallet: ${selectedWallet.id} (${selectedWallet.address})`;
+        console.log(chalk.green(message));
+        await logToFile(message);
+        return selectedWallet;
+    } catch (error) {
+        const errorMessage = `Failed to load wallet: ${error.message}`;
+        console.error(chalk.red(errorMessage));
+        await logToFile(errorMessage);
+        process.exit(1);
+    }
+}
 
 function generateRandomName() {
     const combinedTerms = [...chemicalTerms, ...planets];
@@ -78,10 +144,13 @@ function compileContract() {
         const contract = output.contracts["Counter.sol"].Counter;
 
         spinner.succeed(chalk.green("Contract compiled successfully!"));
+        logToFile("Contract compiled successfully!");
         return { abi: contract.abi, bytecode: contract.evm.bytecode.object };
     } catch (error) {
         spinner.fail(chalk.red("Contract compilation failed!"));
+        const errorMessage = `Contract compilation failed: ${error.message}\n${error.stack}`;
         console.error(error);
+        logToFile(errorMessage);
         process.exit(1);
     }
 }
@@ -91,56 +160,80 @@ async function deployContract(wallet, contractName) {
     const spinner = ora(`Deploying contract ${contractName} to blockchain...`).start();
 
     try {
-        const nonce = await provider.getTransactionCount(wallet.address, "latest");
-        console.log(chalk.gray(`Using nonce: ${nonce}`));
+        const nonce = await wallet.provider.getTransactionCount(wallet.address, "latest");
+        const nonceMessage = `Using nonce: ${nonce}`;
+        console.log(chalk.gray(nonceMessage));
+        await logToFile(nonceMessage);
 
         const factory = new ethers.ContractFactory(abi, bytecode, wallet);
         const contract = await factory.deploy();
 
         console.log("⏳ Awaiting transaction confirmation...");
+        await logToFile("Awaiting transaction confirmation...");
         const txReceipt = await contract.deployTransaction.wait();
 
         if (!txReceipt) {
-            console.log("Failed to get transaction receipt.");
+            const errorMessage = "Failed to get transaction receipt.";
+            console.log(chalk.red(errorMessage));
+            await logToFile(errorMessage);
             process.exit(1);
         }
 
         if (txReceipt.status !== 1) {
-            console.log(chalk.red("Deployment failed!"));
+            const errorMessage = "Deployment failed!";
+            console.log(chalk.red(errorMessage));
+            await logToFile(errorMessage);
             process.exit(1);
         } else {
             spinner.succeed(chalk.green(`Contract ${contractName} deployed successfully!`));
+            const successMessage = `Contract ${contractName} deployed successfully!\nContract Address: ${contract.address}\nTransaction Hash: ${txReceipt.transactionHash}`;
             console.log(chalk.cyan.bold("\n📌 Contract Address: ") + chalk.yellow(contract.address));
             console.log(chalk.cyan.bold("\n📜 Transaction Hash: ") + chalk.yellow(txReceipt.transactionHash));
             console.log(chalk.green("\n✅ Deployment complete! 🎉\n"));
+            await logToFile(successMessage);
         }
     } catch (error) {
-        spinner.fail(chalk.red("Deployment failed!"));
+        const errorMessage = `Deployment failed: ${error.message}\n${error.stack}`;
+        spinner.fail(chalk.red(errorMessage));
         console.error(error);
+        await logToFile(errorMessage);
         process.exit(1);
     }
 }
 
 async function main() {
-    const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
-    const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
-
     console.log(chalk.blue("🚀 Starting Contract Deployment 🚀"));
+    await logToFile("Starting Contract Deployment");
+    
+    const walletData = await loadWallet();
+    const provider = await connectToRpc();
+    const wallet = new ethers.Wallet(walletData.privateKey, provider);
 
     const numberOfContracts = 5;
 
     for (let i = 0; i < numberOfContracts; i++) {
         const contractName = generateRandomName();
-        console.log(chalk.yellow(`\n🔨 Deploying contract ${i + 1}/${numberOfContracts}: ${contractName}`));
+        const deployMessage = `Deploying contract ${i + 1}/${numberOfContracts}: ${contractName}`;
+        console.log(chalk.yellow(`\n🔨 ${deployMessage}`));
+        await logToFile(deployMessage);
         await deployContract(wallet, contractName);
 
         const delay = Math.floor(Math.random() * (6000 - 4000 + 1)) + 4000;
-        console.log(chalk.gray(`⏳ Waiting for ${delay / 1000} seconds`));
+        const delayMessage = `Waiting for ${delay / 1000} seconds`;
+        console.log(chalk.gray(`⏳ ${delayMessage}`));
+        await logToFile(delayMessage);
         await new Promise((resolve) => setTimeout(resolve, delay));
     }
 
-    console.log(chalk.green.bold("\n✅ All contracts deployed successfully! 🎉\n"));
-    process.exit(0);
+    const completeMessage = "All contracts deployed successfully!";
+    console.log(chalk.green.bold(`\n✅ ${completeMessage} 🎉\n`));
+    await logToFile(completeMessage);
+    rl.close();
 }
 
-main();
+main().catch(async error => {
+    const errorMessage = `Main execution failed: ${error.message}\n${error.stack}`;
+    console.error(chalk.red(errorMessage));
+    await logToFile(errorMessage);
+    process.exit(1);
+});
