@@ -17,8 +17,8 @@ A Node.js-based bot designed for automated farming on the Monad Testnet. This bo
 ## Installation
 1. Clone the repository:
    ```bash
-   git clone https://github.com/your-username/monad-farming-bot.git
-   cd monad-farming-bot
+   git clone https://github.com/sinak1023/Monad-Farming-Bot.git
+   cd Monad-Farming-Bot
    ```
 2. Install dependencies:
    ```bash
