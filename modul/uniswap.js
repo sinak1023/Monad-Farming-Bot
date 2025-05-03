@@ -155,24 +155,35 @@ async function getBalance(wallet) {
 }
 
 async function main() {
-    const provider = await connectToRpc();
-    const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
-    console.log(`💳 Account: ${wallet.address}`.green);
-
-    await getBalance(wallet);
-
-    for (const [tokenSymbol, tokenAddress] of Object.entries(TOKEN_ADDRESSES)) {
-        const ethAmount = getRandomEthAmount();
-        await swapEthForTokens(wallet, tokenAddress, ethAmount, tokenSymbol);
-        const delay = Math.floor(Math.random() * (3000 - 1000 + 1)) + 1000;
-        console.log(`⏳ Waiting ${delay / 1000} seconds`.grey);
-        await sleep(delay);
+    const privateKey = process.env.PRIVATE_KEY;
+    if (!privateKey) {
+        console.error(`❌ No private key provided in environment variables`.red);
+        process.exit(1);
     }
 
-    console.log(`🔄 Converting all tokens back to MONAD`.white);
-    
-    for (const [tokenSymbol, tokenAddress] of Object.entries(TOKEN_ADDRESSES)) {
-        await swapTokensForEth(wallet, tokenAddress, tokenSymbol);
+    const provider = await connectToRpc();
+    try {
+        const wallet = new ethers.Wallet(privateKey, provider);
+        console.log(`💳 Account: ${wallet.address}`.green);
+
+        await getBalance(wallet);
+
+        for (const [tokenSymbol, tokenAddress] of Object.entries(TOKEN_ADDRESSES)) {
+            const ethAmount = getRandomEthAmount();
+            await swapEthForTokens(wallet, tokenAddress, ethAmount, tokenSymbol);
+            const delay = Math.floor(Math.random() * (3000 - 1000 + 1)) + 1000;
+            console.log(`⏳ Waiting ${delay / 1000} seconds`.grey);
+            await sleep(delay);
+        }
+
+        console.log(`🔄 Converting all tokens back to MONAD`.white);
+        
+        for (const [tokenSymbol, tokenAddress] of Object.entries(TOKEN_ADDRESSES)) {
+            await swapTokensForEth(wallet, tokenAddress, tokenSymbol);
+        }
+    } catch (error) {
+        console.error(`❌ Failed to initialize wallet: ${error.message}`.red);
+        process.exit(1);
     }
 }
 
